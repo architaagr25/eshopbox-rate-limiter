@@ -1,7 +1,6 @@
 /**
- * Fixed-window rate limiter: at most {@code limit} calls are allowed per one-second window.
- *
- * One instance is meant to be shared by all threads calling the same sales channel.
+ * Simple fixed-window rate limiter - allows at most `limit` calls in each 1 second window.
+ * Create one per sales channel and share it across all the threads that call that channel.
  */
 public class RateLimiter {
 
@@ -10,7 +9,7 @@ public class RateLimiter {
     private final int limit;
     private final Clock clock;
 
-    // Both fields are only read/written while holding the lock on "this".
+    // only touched inside allowRequest(), which is synchronized
     private long windowStart;
     private int count;
 
@@ -31,20 +30,20 @@ public class RateLimiter {
     }
 
     /**
-     * Returns true if the call fits in the current second, false if it would go over the limit.
+     * true  -> still under the limit for this second, go ahead
+     * false -> limit already hit, caller should retry later
      *
-     * The whole "check window -> maybe reset -> check count -> increment" sequence has to be
-     * atomic, otherwise two threads can both see count == limit - 1 and both get through,
-     * or one thread can reset the window while another is incrementing the old one.
-     * Holding the monitor for the whole method is the simplest way to guarantee that.
+     * Made the whole method synchronized on purpose. Checking the window, resetting it
+     * and bumping the count need to happen together - if two threads both read
+     * count = limit - 1 at the same time they'd both get through and we go over.
      */
     public synchronized boolean allowRequest() {
         long now = clock.nanoTime();
 
-        // nanoTime can be negative and can wrap, so always compare using the difference.
+        // using the difference instead of comparing timestamps directly, nanoTime can overflow
         long elapsed = now - windowStart;
         if (elapsed >= WINDOW_NANOS) {
-            // Jump forward in whole seconds so windows stay aligned even after an idle gap.
+            // move ahead by full seconds, so after a long pause the windows still line up
             windowStart += (elapsed / WINDOW_NANOS) * WINDOW_NANOS;
             count = 0;
         }
